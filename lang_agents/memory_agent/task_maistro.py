@@ -12,6 +12,9 @@ from langchain_core.messages import merge_message_runs
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -44,7 +47,7 @@ def extract_tool_info(tool_calls, schema_name="Memory"):
     
     Args:
         tool_calls: List of tool calls from the model
-        schema_name: Name of the schema tool (e.g., "Memory", "ToDo", "Profile")
+        schema_name: Name of the schema tool (e.g., "Memory", "ToDo", "Idea", "Profile")
     """
     # Initialize list of changes
     changes = []
@@ -95,6 +98,23 @@ def extract_tool_info(tool_calls, schema_name="Memory"):
     
     return "\n\n".join(result_parts)
 
+
+def get_model_from_config(config_obj: configuration.Configuration) -> BaseChatModel:
+    """Initialize the appropriate model based on the configuration.
+    
+    Args:
+        config_obj: Configuration object containing model settings
+        
+    Returns:
+        Initialized chat model
+    """
+    # Use init_chat_model to initialize the model based on provider
+    return init_chat_model(
+        model=config_obj.model_name,
+        model_provider=config_obj.model_provider,
+        temperature=config_obj.temperature
+    )
+
 ## Schema definitions
 
 # User profile schema
@@ -130,32 +150,46 @@ class ToDo(BaseModel):
         default="not started"
     )
 
-## Initialize the model and tools
+# Idea schema
+class Idea(BaseModel):
+    """Schema for storing creative ideas"""
+    idea: str = Field(description="The idea or concept title")
+    description: Optional[str] = Field(
+        description="A longer description of the idea with more context"
+    )
+    solutions: list[str] = Field(
+        description="List of possible implementations or ways to develop this idea",
+        min_items=1,
+        default_factory=list
+    )
+    difficulty: Literal["easy", "medium", "hard"] = Field(
+        description="Estimated difficulty level to implement this idea",
+    )
+    time_to_implement: Optional[int] = Field(
+        description="Estimated time to implement this idea (minutes)",
+        default=None
+    )
+    status: Literal["not started", "in progress", "done", "archived"] = Field(
+        description="Current status of the idea",
+        default="not started"
+    )
+
 
 # Update memory tool
 class UpdateMemory(TypedDict):
     """ Decision on what memory type to update """
-    update_type: Literal['user', 'todo', 'instructions']
-
-# Initialize the model
-model = ChatOpenAI(model="gpt-4o", temperature=0)
-
-## Create the Trustcall extractors for updating the user profile and ToDo list
-profile_extractor = create_extractor(
-    model,
-    tools=[Profile],
-    tool_choice="Profile",
-)
+    update_type: Literal['user', 'todo', 'instructions', 'idea']
 
 ## Prompts 
 
 # Chatbot instruction for choosing what to update and what tools to call 
 MODEL_SYSTEM_MESSAGE = """{task_maistro_role} 
 
-You have a long term memory which keeps track of three things:
+You have a long term memory which keeps track of four things:
 1. The user's profile (general information about them) 
 2. The user's ToDo list
-3. General instructions for updating the ToDo list
+3. The user's Ideas list
+4. General instructions for updating the ToDo or Ideas list
 
 Here is the current User Profile (may be empty if no information has been collected yet):
 <user_profile>
@@ -167,7 +201,12 @@ Here is the current ToDo List (may be empty if no tasks have been added yet):
 {todo}
 </todo>
 
-Here are the current user-specified preferences for updating the ToDo list (may be empty if no preferences have been specified yet):
+Here is the current Ideas List (may be empty if no ideas have been added yet):
+<ideas>
+{ideas}
+</ideas>
+
+Here are the current user-specified preferences for updating the ToDo or Ideas list (may be empty if no preferences have been specified yet):
 <instructions>
 {instructions}
 </instructions>
@@ -179,19 +218,22 @@ Here are your instructions for reasoning about the user's messages:
 2. Decide whether any of the your long-term memory should be updated:
 - If personal information was provided about the user, update the user's profile by calling UpdateMemory tool with type `user`
 - If tasks are mentioned, update the ToDo list by calling UpdateMemory tool with type `todo`
-- If the user has specified preferences for how to update the ToDo list, update the instructions by calling UpdateMemory tool with type `instructions`
+- If ideas or concepts are mentioned, update the Ideas list by calling UpdateMemory tool with type `idea`
+- If the user has specified preferences for how to update the ToDo or Ideas list, update the instructions by calling UpdateMemory tool with type `instructions`
 
 3. Tell the user that you have updated your memory, if appropriate:
 - Do not tell the user you have updated the user's profile
-- Tell the user them when you update the todo list
+- Tell the user them when you update the todo list or ideas list
 - Do not tell the user that you have updated instructions
 
-4. Err on the side of updating the todo list. No need to ask for explicit permission.
+4. Err on the side of updating the todo or ideas list. No need to ask for explicit permission.
 
 5. Respond naturally to user user after a tool call was made to save memories, or if no tool call was made."""
 
 # Trustcall instruction
 TRUSTCALL_INSTRUCTION = """Reflect on following interaction. 
+
+Correct spelling and grammatical errors in the user's messages.
 
 Use the provided tools to retain any necessary memories about the user. 
 
@@ -199,10 +241,10 @@ Use parallel tool calling to handle updates and insertions simultaneously.
 
 System Time: {time}"""
 
-# Instructions for updating the ToDo list
+# Instructions for updating the ToDo or Ideas list
 CREATE_INSTRUCTIONS = """Reflect on the following interaction.
 
-Based on this interaction, update your instructions for how to update ToDo list items. Use any feedback from the user to update how they like to have items added, etc.
+Based on this interaction, update your instructions for how to update ToDo or Ideas list items. Use any feedback from the user to update how they like to have items added, etc.
 
 Your current instructions are:
 
@@ -222,6 +264,9 @@ def task_mAIstro(state: MessagesState, config: RunnableConfig, store: BaseStore)
     todo_category = configurable.todo_category
     task_maistro_role = configurable.task_maistro_role
 
+    # Initialize the model based on configuration
+    model = get_model_from_config(configurable)
+
    # Retrieve profile memory from the store
     namespace = ("profile", todo_category, user_id)
     memories = store.search(namespace)
@@ -235,6 +280,11 @@ def task_mAIstro(state: MessagesState, config: RunnableConfig, store: BaseStore)
     memories = store.search(namespace)
     todo = "\n".join(f"{mem.value}" for mem in memories)
 
+    # Retrieve ideas memory from the store
+    namespace = ("idea", todo_category, user_id)
+    memories = store.search(namespace)
+    ideas = "\n".join(f"{mem.value}" for mem in memories)
+
     # Retrieve custom instructions
     namespace = ("instructions", todo_category, user_id)
     memories = store.search(namespace)
@@ -243,10 +293,16 @@ def task_mAIstro(state: MessagesState, config: RunnableConfig, store: BaseStore)
     else:
         instructions = ""
     
-    system_msg = MODEL_SYSTEM_MESSAGE.format(task_maistro_role=task_maistro_role, user_profile=user_profile, todo=todo, instructions=instructions)
+    system_msg = MODEL_SYSTEM_MESSAGE.format(task_maistro_role=task_maistro_role, 
+                                             user_profile=user_profile, 
+                                             todo=todo, 
+                                             ideas=ideas, 
+                                             instructions=instructions)
 
     # Respond using memory as well as the chat history
-    response = model.bind_tools([UpdateMemory], parallel_tool_calls=False).invoke([SystemMessage(content=system_msg)]+state["messages"])
+    response = model.bind_tools([UpdateMemory], 
+                                parallel_tool_calls=False
+                                ).invoke([SystemMessage(content=system_msg)]+state["messages"])
 
     return {"messages": [response]}
 
@@ -258,6 +314,16 @@ def update_profile(state: MessagesState, config: RunnableConfig, store: BaseStor
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
     todo_category = configurable.todo_category
+
+    # Initialize the model based on configuration
+    model = get_model_from_config(configurable)
+    
+    # Create the extractor with the dynamically initialized model
+    profile_extractor = create_extractor(
+        model,
+        tools=[Profile],
+        tool_choice="Profile",
+    )
 
     # Define the namespace for the memories
     namespace = ("profile", todo_category, user_id)
@@ -299,6 +365,9 @@ def update_todos(state: MessagesState, config: RunnableConfig, store: BaseStore)
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
     todo_category = configurable.todo_category
+
+    # Initialize the model based on configuration
+    model = get_model_from_config(configurable)
 
     # Define the namespace for the memories
     namespace = ("todo", todo_category, user_id)
@@ -347,6 +416,64 @@ def update_todos(state: MessagesState, config: RunnableConfig, store: BaseStore)
     todo_update_msg = extract_tool_info(spy.called_tools, tool_name)
     return {"messages": [{"role": "tool", "content": todo_update_msg, "tool_call_id": tool_calls[0]['id']}]}
 
+def update_ideas(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    """Reflect on the chat history and update the ideas collection."""
+    
+    # Get the user ID from the config
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+    todo_category = configurable.todo_category
+
+    # Initialize the model based on configuration
+    model = get_model_from_config(configurable)
+
+    # Define the namespace for the ideas
+    namespace = ("idea", todo_category, user_id)
+
+    # Retrieve the most recent ideas for context
+    existing_items = store.search(namespace)
+
+    # Format the existing ideas for the Trustcall extractor
+    tool_name = "Idea"
+    existing_memories = ([(existing_item.key, tool_name, existing_item.value)
+                          for existing_item in existing_items]
+                          if existing_items
+                          else None
+                        )
+
+    # Merge the chat history and the instruction
+    TRUSTCALL_INSTRUCTION_FORMATTED=TRUSTCALL_INSTRUCTION.format(time=datetime.now().isoformat())
+    updated_messages=list(merge_message_runs(messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)] + state["messages"][:-1]))
+
+    # Initialize the spy for visibility into the tool calls made by Trustcall
+    spy = Spy()
+    
+    # Create the Trustcall extractor for updating the ideas list 
+    idea_extractor = create_extractor(
+    model,
+    tools=[Idea],
+    tool_choice=tool_name,
+    enable_inserts=True
+    ).with_listeners(on_end=spy)
+
+    # Invoke the extractor
+    result = idea_extractor.invoke({"messages": updated_messages, 
+                                   "existing": existing_memories})
+
+    # Save the ideas from Trustcall to the store
+    for r, rmeta in zip(result["responses"], result["response_metadata"]):
+        store.put(namespace,
+                  rmeta.get("json_doc_id", str(uuid.uuid4())),
+                  r.model_dump(mode="json"),
+            )
+        
+    # Respond to the tool call made in task_mAIstro, confirming the update    
+    tool_calls = state['messages'][-1].tool_calls
+
+    # Extract the changes made by Trustcall and add the the ToolMessage returned to task_mAIstro
+    idea_update_msg = extract_tool_info(spy.called_tools, tool_name)
+    return {"messages": [{"role": "tool", "content": idea_update_msg, "tool_call_id": tool_calls[0]['id']}]}
+
 def update_instructions(state: MessagesState, config: RunnableConfig, store: BaseStore):
 
     """Reflect on the chat history and update the memory collection."""
@@ -355,6 +482,9 @@ def update_instructions(state: MessagesState, config: RunnableConfig, store: Bas
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
     todo_category = configurable.todo_category
+    
+    # Initialize the model based on configuration
+    model = get_model_from_config(configurable)
     
     namespace = ("instructions", todo_category, user_id)
 
@@ -372,7 +502,7 @@ def update_instructions(state: MessagesState, config: RunnableConfig, store: Bas
     return {"messages": [{"role": "tool", "content": "updated instructions", "tool_call_id":tool_calls[0]['id']}]}
 
 # Conditional edge
-def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_todos", "update_instructions", "update_profile"]:
+def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_todos", "update_instructions", "update_profile", "update_ideas"]: # type: ignore
 
     """Reflect on the memories and chat history to decide whether to update the memory collection."""
     message = state['messages'][-1]
@@ -386,6 +516,8 @@ def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore
             return "update_todos"
         elif tool_call['args']['update_type'] == "instructions":
             return "update_instructions"
+        elif tool_call['args']['update_type'] == "idea":
+            return "update_ideas"
         else:
             raise ValueError
 
@@ -397,6 +529,7 @@ builder.add_node(task_mAIstro)
 builder.add_node(update_todos)
 builder.add_node(update_profile)
 builder.add_node(update_instructions)
+builder.add_node(update_ideas)
 
 # Define the flow 
 builder.add_edge(START, "task_mAIstro")
@@ -404,6 +537,7 @@ builder.add_conditional_edges("task_mAIstro", route_message)
 builder.add_edge("update_todos", "task_mAIstro")
 builder.add_edge("update_profile", "task_mAIstro")
 builder.add_edge("update_instructions", "task_mAIstro")
+builder.add_edge("update_ideas", "task_mAIstro")
 
 # Compile the graph
 graph = builder.compile()
