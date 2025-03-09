@@ -184,7 +184,9 @@ gcp-login.json
 *.txt
 *.pdf
 *.csv
-*.json
+# *.json
 *.jsonl
 
 uv.lock
+
+*.langgraph_api
