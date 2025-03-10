@@ -1,5 +1,7 @@
 # AgentForge
 
+**Note:** It is a very beginning version of a collection of agents which can be helpful for my daily routine. 
+
 A Python package for building and managing language agents based on the LangGraph framework with support for multiple LLM providers.
 
 ## Project Overview
@@ -7,7 +9,7 @@ A Python package for building and managing language agents based on the LangGrap
 AgentForge contains several different LLM agents built with the LangGraph framework. Some of the agents in this repository are based on [langchain-academy](https://github.com/langchain-ai/langchain-academy) modules but have been enhanced with additional features:
 
 ### Research Agent
-Based on langchain-academy module 4, with modifications and enhancements.
+Based on langchain-academy module 4
 
 ### Task Maistro
 Based on langchain-academy module 5, with the following additional features:
@@ -19,32 +21,7 @@ Based on langchain-academy module 5, with the following additional features:
 ## Installation
 
 ```bash
-pip install lang-agents
-```
-
-## Quick Start
-
-```python
-from lang_agents import Agent, AgentConfig
-
-agent = Agent(
-    config=AgentConfig(
-        provider="openai",
-        model="gpt-4-turbo-preview"
-    )
-)
-
-response = await agent.run("Your prompt here")
-```
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install ".[dev]"
-
-# Run tests
-pytest
+uv pip install ".[dev]"
 ```
 
 ## License
