@@ -13,6 +13,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -122,6 +123,11 @@ def get_model_from_config(config_obj: configuration.Configuration) -> BaseChatMo
     """
     # Use init_chat_model to initialize the model based on provider
     model_provider = config_obj.model_provider
+    if model_provider == configuration.ModelProvider.OLLAMA:
+        return ChatOllama(model=config_obj.model_name, 
+                          base_url="http://host.docker.internal:11434",
+                          temperature=config_obj.temperature)
+    
     model_provider = model_provider.value if isinstance(model_provider, configuration.ModelProvider) else model_provider
     return init_chat_model(
         model=config_obj.model_name,
@@ -498,7 +504,7 @@ def update_ideas(state: MessagesState, config: RunnableConfig, store: BaseStore)
             )
     for change in changes_to_apply:
         if change['type'] == 'remove':
-            try:    
+            try:
                 store.delete(namespace, change['doc_id'])
             except Exception as e:
                 print(e)
