@@ -57,12 +57,19 @@ def extract_tool_info(tool_calls, schema_name="Memory"):
             if call['name'] == 'PatchDoc':
                 # Check if there are any patches
                 if call['args']['patches']:
-                    changes.append({
-                        'type': 'update',
-                        'doc_id': call['args']['json_doc_id'],
-                        'planned_edits': call['args']['planned_edits'],
-                        'value': call['args']['patches'][0]['value']
-                    })
+                    if call['args']['patches'][0]['op'] == 'remove':
+                        changes.append({
+                            'type': 'remove',
+                            'doc_id': call['args']['json_doc_id'],
+                            'planned_edits': call['args']['planned_edits']
+                        })
+                    else:
+                        changes.append({
+                            'type': 'update',
+                            'doc_id': call['args']['json_doc_id'],
+                            'planned_edits': call['args']['planned_edits'],
+                            'value': call['args']['patches'][0]['value']
+                        })
                 else:
                     # Handle case where no changes were needed
                     changes.append({
@@ -90,13 +97,18 @@ def extract_tool_info(tool_calls, schema_name="Memory"):
                 f"Document {change['doc_id']} unchanged:\n"
                 f"{change['planned_edits']}"
             )
+        elif change['type'] == 'remove':
+            result_parts.append(
+                f"Document {change['doc_id']} removed:\n"
+                f"{change['planned_edits']}"
+            )
         else:
             result_parts.append(
                 f"New {schema_name} created:\n"
                 f"Content: {change['value']}"
             )
     
-    return "\n\n".join(result_parts)
+    return "\n\n".join(result_parts), changes
 
 
 def get_model_from_config(config_obj: configuration.Configuration) -> BaseChatModel:
@@ -109,9 +121,11 @@ def get_model_from_config(config_obj: configuration.Configuration) -> BaseChatMo
         Initialized chat model
     """
     # Use init_chat_model to initialize the model based on provider
+    model_provider = config_obj.model_provider
+    model_provider = model_provider.value if isinstance(model_provider, configuration.ModelProvider) else model_provider
     return init_chat_model(
         model=config_obj.model_name,
-        model_provider=config_obj.model_provider,
+        model_provider=model_provider,
         temperature=config_obj.temperature
     )
 
@@ -182,6 +196,7 @@ class UpdateMemory(TypedDict):
 
 ## Prompts 
 
+# TODO: Imprve this prompt. It works not well for Gemini and DeepSeek.
 # Chatbot instruction for choosing what to update and what tools to call 
 MODEL_SYSTEM_MESSAGE = """{task_maistro_role} 
 
@@ -213,27 +228,26 @@ Here are the current user-specified preferences for updating the ToDo or Ideas l
 
 Here are your instructions for reasoning about the user's messages:
 
-1. Reason carefully about the user's messages as presented below. 
+1. First, carefully analyze the user's message to understand their intent and any implicit or explicit information they've shared.
 
 2. Decide whether any of the your long-term memory should be updated:
 - If personal information was provided about the user, update the user's profile by calling UpdateMemory tool with type `user`
 - If tasks are mentioned, update the ToDo list by calling UpdateMemory tool with type `todo`
 - If ideas or concepts are mentioned, update the Ideas list by calling UpdateMemory tool with type `idea`
 - If the user has specified preferences for how to update the ToDo or Ideas list, update the instructions by calling UpdateMemory tool with type `instructions`
+- If the user asks only to retrieve information from the memory, return the information based on current User Profile, ToDo List, and Ideas List
 
-3. Tell the user that you have updated your memory, if appropriate:
-- Do not tell the user you have updated the user's profile
-- Tell the user them when you update the todo list or ideas list
-- Do not tell the user that you have updated instructions
+4. For complex messages, prioritize identifying multiple relevant pieces of information that might belong in different memory categories.
 
-4. Err on the side of updating the todo or ideas list. No need to ask for explicit permission.
+5. Tell the user that you have updated your memory, if you did
 
-5. Respond naturally to user user after a tool call was made to save memories, or if no tool call was made."""
+6. Err on the side of updating the todo list. No need to ask for explicit permission.
+
+7. End after you perform the action requested by the user. Respond naturally to user user after a tool call was made to save memories, or if no tool call was made.
+"""
 
 # Trustcall instruction
 TRUSTCALL_INSTRUCTION = """Reflect on following interaction. 
-
-Correct spelling and grammatical errors in the user's messages.
 
 Use the provided tools to retain any necessary memories about the user. 
 
@@ -299,11 +313,18 @@ def task_mAIstro(state: MessagesState, config: RunnableConfig, store: BaseStore)
                                              ideas=ideas, 
                                              instructions=instructions)
 
+    # TODO: check that there is no bug here.
     # Respond using memory as well as the chat history
-    response = model.bind_tools([UpdateMemory], 
-                                parallel_tool_calls=False
-                                ).invoke([SystemMessage(content=system_msg)]+state["messages"])
-
+    # The issue is that we're comparing an enum instance with an enum class
+    # We need to compare the enum values directly
+    if (configurable.model_provider == configuration.ModelProvider.GEMINI or
+        configurable.model_provider == configuration.ModelProvider.OLLAMA):
+        response = model.bind_tools([UpdateMemory]).invoke([SystemMessage(content=system_msg)]+state["messages"])
+    else:
+        response = model.bind_tools([UpdateMemory], 
+                                    parallel_tool_calls=False
+                                    ).invoke([SystemMessage(content=system_msg)]+state["messages"])
+        
     return {"messages": [response]}
 
 def update_profile(state: MessagesState, config: RunnableConfig, store: BaseStore):
@@ -401,6 +422,8 @@ def update_todos(state: MessagesState, config: RunnableConfig, store: BaseStore)
     # Invoke the extractor
     result = todo_extractor.invoke({"messages": updated_messages, 
                                          "existing": existing_memories})
+    todo_update_msg, changes_to_apply = extract_tool_info(spy.called_tools, tool_name)
+
 
     # Save save the memories from Trustcall to the store
     for r, rmeta in zip(result["responses"], result["response_metadata"]):
@@ -408,12 +431,17 @@ def update_todos(state: MessagesState, config: RunnableConfig, store: BaseStore)
                   rmeta.get("json_doc_id", str(uuid.uuid4())),
                   r.model_dump(mode="json"),
             )
+    for change in changes_to_apply:
+        if change['type'] == 'remove':
+            try:
+                store.delete(namespace, change['doc_id'])
+            except Exception as e:
+                print(e)
         
     # Respond to the tool call made in task_mAIstro, confirming the update    
     tool_calls = state['messages'][-1].tool_calls
 
     # Extract the changes made by Trustcall and add the the ToolMessage returned to task_mAIstro
-    todo_update_msg = extract_tool_info(spy.called_tools, tool_name)
     return {"messages": [{"role": "tool", "content": todo_update_msg, "tool_call_id": tool_calls[0]['id']}]}
 
 def update_ideas(state: MessagesState, config: RunnableConfig, store: BaseStore):
@@ -459,6 +487,8 @@ def update_ideas(state: MessagesState, config: RunnableConfig, store: BaseStore)
     # Invoke the extractor
     result = idea_extractor.invoke({"messages": updated_messages, 
                                    "existing": existing_memories})
+    idea_update_msg, changes_to_apply = extract_tool_info(spy.called_tools, tool_name)
+
 
     # Save the ideas from Trustcall to the store
     for r, rmeta in zip(result["responses"], result["response_metadata"]):
@@ -466,12 +496,17 @@ def update_ideas(state: MessagesState, config: RunnableConfig, store: BaseStore)
                   rmeta.get("json_doc_id", str(uuid.uuid4())),
                   r.model_dump(mode="json"),
             )
+    for change in changes_to_apply:
+        if change['type'] == 'remove':
+            try:    
+                store.delete(namespace, change['doc_id'])
+            except Exception as e:
+                print(e)
         
     # Respond to the tool call made in task_mAIstro, confirming the update    
     tool_calls = state['messages'][-1].tool_calls
 
     # Extract the changes made by Trustcall and add the the ToolMessage returned to task_mAIstro
-    idea_update_msg = extract_tool_info(spy.called_tools, tool_name)
     return {"messages": [{"role": "tool", "content": idea_update_msg, "tool_call_id": tool_calls[0]['id']}]}
 
 def update_instructions(state: MessagesState, config: RunnableConfig, store: BaseStore):

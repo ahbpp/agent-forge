@@ -11,6 +11,8 @@ from dataclasses import dataclass
 class ModelProvider(Enum):
     OPENAI = "openai"
     GEMINI = "google_genai"
+    DEEPSEEK = "deepseek"
+    OLLAMA = "ollama"
 
 
 @dataclass(kw_only=True)
@@ -36,4 +38,13 @@ class Configuration:
             for f in fields(cls)
             if f.init
         }
+        
+        # Convert model_provider string to Enum if it exists
+        if "model_provider" in values and values["model_provider"] is not None:
+            if isinstance(values["model_provider"], str):
+                try:
+                    values["model_provider"] = ModelProvider(values["model_provider"])
+                except ValueError:
+                    raise ValueError(f"Invalid model provider: {values['model_provider']}")
+        
         return cls(**{k: v for k, v in values.items() if v})
