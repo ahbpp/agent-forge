@@ -6,9 +6,11 @@ This script allows users to interact with MongoDB using natural language.
 
 import sys
 import argparse
+import pprint
+
 from langchain_core.messages import HumanMessage
 
-from lang_agents.pymongo_agent.pymongo_agent import mongodb_agent
+from lang_agents.pymongo_agent.pymongo_agent import graph as mongodb_agent
 
 def main():
     parser = argparse.ArgumentParser(description="MongoDB Agent - Query MongoDB using natural language")
@@ -50,7 +52,7 @@ def main():
     elif args.query:
         message = HumanMessage(content=args.query)
         result = mongodb_agent.invoke({"messages": [message]})
-        print(result.messages[-1].content)
+        pprint.pprint(result["messages"])
     
     else:
         parser.print_help()

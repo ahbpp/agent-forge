@@ -1,333 +1,142 @@
-import uuid
-import os
+from logging import Logger
 import json
-from datetime import datetime
+import pprint
+
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from trustcall import create_extractor
-
-from typing import Literal, Optional, TypedDict, List, Dict, Any, Union
+from typing import TypedDict, List, Dict, Any
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import merge_message_runs
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_core.tools import tool
-from langchain_core.output_parsers import StrOutputParser
 
-from langchain_openai import ChatOpenAI
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
-
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
-from lang_agents.pymongo_agent.utils import get_read_mongo_client, print_schema
-
+from lang_agents.pymongo_agent.utils import (
+    get_read_mongo_client, 
+    get_schema, 
+    list_collections,
+    aggregate_mongo_doc_to_json_serializable,
+    get_model_from_config,
+    parse_aggregate_query_tool_call
+)
+from lang_agents.pymongo_agent.configuration import Configuration, ModelProvider
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
-# Create cache directory if it doesn't exist
-CACHE_DIR = Path("lang_agents/pymongo_agent/cache")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+logger = Logger(__name__)
+logger.setLevel("INFO")
 
 # Initialize MongoDB client
 mongo_client = get_read_mongo_client()
 
 # Initialize model
-model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+model = get_model_from_config(Configuration())
 
-# Define state type for our MongoDB agent
-class MongoDBAgentState(MessagesState):
-    """State for the MongoDB agent."""
-    db_info: Optional[Dict[str, Any]] = None
-    query: Optional[str] = None
-    results: Optional[Any] = None
-    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class Collection(TypedDict):
+    collection: str
 
-# MongoDB Tools
-@tool
-def list_databases() -> List[str]:
-    """List all available databases in MongoDB."""
-    databases = mongo_client.list_database_names()
-    return databases
+class AggregateQuery(BaseModel):
+    query: List[Dict[str, Any]] = Field(description="The PyMongo aggregation pipeline (list of dictionaries)")
 
-@tool
-def list_collections(database: str) -> List[str]:
-    """List all collections in a specific database."""
-    try:
-        db = mongo_client[database]
-        collections = db.list_collection_names()
-        return collections
-    except Exception as e:
-        return f"Error: {str(e)}"
 
-@tool
-def get_collection_schema(database: str, collection: str) -> Dict:
-    """Get the schema of a specific collection."""
-    try:
-        db = mongo_client[database]
-        coll = db[collection]
-        sample_doc = coll.find_one()
-        
-        # Convert MongoDB document to serializable format
-        import json
-        from bson import json_util
-        schema_str = json.loads(json_util.dumps(sample_doc))
-        
-        return {"schema": schema_str}
-    except Exception as e:
-        return {"error": str(e)}
-
-@tool
-def run_find_query(database: str, collection: str, query: Dict, limit: int = 10) -> Dict:
-    """Run a find query on a MongoDB collection."""
-    try:
-        db = mongo_client[database]
-        coll = db[collection]
-        
-        # Execute the query
-        results = list(coll.find(query).limit(limit))
-        
-        # Convert MongoDB cursor to serializable format
-        import json
-        from bson import json_util
-        results_json = json.loads(json_util.dumps(results))
-        
-        return {
-            "query": query,
-            "results": results_json,
-            "count": len(results_json)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@tool
-def run_aggregate_query(database: str, collection: str, pipeline: List[Dict], limit: int = 10) -> Dict:
-    """Run an aggregate query on a MongoDB collection."""
-    try:
-        db = mongo_client[database]
-        coll = db[collection]
-        
-        # Add a limit stage if not already in pipeline
-        has_limit = any('$limit' in stage for stage in pipeline)
-        if not has_limit:
-            pipeline.append({"$limit": limit})
-        
-        # Execute the aggregation
-        results = list(coll.aggregate(pipeline))
-        
-        # Convert MongoDB cursor to serializable format
-        import json
-        from bson import json_util
-        results_json = json.loads(json_util.dumps(results))
-        
-        return {
-            "pipeline": pipeline,
-            "results": results_json,
-            "count": len(results_json)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@tool
-def run_count_query(database: str, collection: str, query: Dict) -> Dict:
-    """Count documents in a MongoDB collection based on a query."""
-    try:
-        db = mongo_client[database]
-        coll = db[collection]
-        
-        # Execute the count
-        count = coll.count_documents(query)
-        
-        return {
-            "query": query,
-            "count": count
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@tool
-def run_distinct_query(database: str, collection: str, field: str, query: Dict = None) -> Dict:
-    """Get distinct values for a field in a MongoDB collection."""
-    try:
-        db = mongo_client[database]
-        coll = db[collection]
-        
-        # Execute the distinct query
-        if query:
-            distinct_values = coll.distinct(field, query)
-        else:
-            distinct_values = coll.distinct(field)
-        
-        # Convert to serializable format
-        import json
-        from bson import json_util
-        values_json = json.loads(json_util.dumps(distinct_values))
-        
-        return {
-            "field": field,
-            "query": query,
-            "values": values_json,
-            "count": len(values_json)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-# Function to cache results
-def save_to_cache(state: MongoDBAgentState) -> None:
-    """Save query and results to cache for reproducibility."""
-    if not state.query or not state.results:
-        return
+def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    configurable = Configuration.from_runnable_config(config)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cache_file = CACHE_DIR / f"query_{timestamp}_{state.request_id}.json"
+    messages = state['messages']
+    last_message = messages[-1]
+
+    tool_call = last_message.tool_calls[0]
+    collection_name = tool_call['args']['collection']
+    collection = mongo_client[configurable.database][collection_name]
+
+    collection_schema = get_schema(collection)
+
+    system_message = """
+    Reflect on the following interaction 
+    Create a MongoDB aggregate query for {collection_name} collection 
+    You must call the AggregateQuery tool with the aggregate query. 
+    Check that all `[`, `]`, `{{`, `}}` are balanced and in the correct order.
+    Do not ask any questions or permissions
+
+    Here is the schema for the collection:
+    <schema>
+    {collection_schema}
+    </schema>
+    """.format(collection_name=collection_name, collection_schema=collection_schema)
     
-    cache_data = {
-        "timestamp": timestamp,
-        "request_id": state.request_id,
-        "query": state.query,
-        "results": state.results
+    llm_with_tools = model.bind_tools(tools=[AggregateQuery], tool_choice=True)
+    response = llm_with_tools.invoke([SystemMessage(content=system_message)]+messages[:-1])
+    try:
+        query = response.tool_calls[0]["args"]["query"]
+    except (IndexError, KeyError) as e:
+        _, query = parse_aggregate_query_tool_call(response)
+    pprint.pprint(query)
+    if isinstance(query, str):
+        query = json.loads(query)
+    if isinstance(query, dict):
+        query = [query]
+
+    # Execute the query
+    print(f"Executing query: {query}")
+    cursor = collection.aggregate(query)
+    result = [aggregate_mongo_doc_to_json_serializable(doc) 
+              for doc in cursor]
+    pprint.pprint(result)
+
+    content = {
+        "query": query,
+        "result": result
     }
-    
-    with open(cache_file, "w") as f:
-        json.dump(cache_data, f, indent=2)
+    content = json.dumps(content, indent=2)
 
-# Graph nodes
-def analyze_request(state: MongoDBAgentState) -> MongoDBAgentState:
-    """Analyze the user's request and determine what MongoDB operations to perform."""
-    messages = state.messages.copy()
-    
-    system_message = """You are a MongoDB query assistant. Your job is to:
-1. Analyze the user's request related to MongoDB
-2. Determine what MongoDB operation is needed (list databases, list collections, find, aggregate, etc.)
-3. Specify the exact parameters needed for the MongoDB operation
+    return {"messages": [{"role": "tool", 
+                          "content": content, 
+                          "tool_call_id": tool_call['id']}]}
 
-Return a JSON object with the following structure:
-{
-    "operation": "one of [list_databases, list_collections, get_collection_schema, run_find_query, run_aggregate_query, run_count_query, run_distinct_query]",
-    "parameters": {
-        // Parameters required for the operation
-    },
-    "explanation": "Brief explanation of what you're about to do"
-}
-"""
-    
-    messages.insert(0, SystemMessage(content=system_message))
-    response = model.invoke(messages)
-    
-    try:
-        import json
-        analysis = json.loads(response.content)
-        state.query = analysis
-        return state
-    except Exception as e:
-        # If parsing fails, return the error
-        state.query = {"error": f"Failed to parse analysis: {str(e)}"}
-        return state
 
-def execute_operation(state: MongoDBAgentState) -> MongoDBAgentState:
-    """Execute the MongoDB operation based on the analysis."""
-    if not state.query or "error" in state.query:
-        return state
-    
-    operation = state.query.get("operation")
-    parameters = state.query.get("parameters", {})
-    
-    # Map operations to tools
-    operation_map = {
-        "list_databases": list_databases,
-        "list_collections": list_collections,
-        "get_collection_schema": get_collection_schema,
-        "run_find_query": run_find_query,
-        "run_aggregate_query": run_aggregate_query,
-        "run_count_query": run_count_query,
-        "run_distinct_query": run_distinct_query
-    }
-    
-    if operation in operation_map:
-        try:
-            # Execute the operation
-            results = operation_map[operation](**parameters)
-            state.results = results
-            
-            # Save to cache
-            save_to_cache(state)
-            
-            return state
-        except Exception as e:
-            state.results = {"error": f"Failed to execute operation: {str(e)}"}
-            return state
-    else:
-        state.results = {"error": f"Unknown operation: {operation}"}
-        return state
+def handle_request(state: MessagesState, 
+                   config: RunnableConfig, 
+                   store: BaseStore):
+    messages = state['messages']
+    configurable = Configuration.from_runnable_config(config)
 
-def format_response(state: MongoDBAgentState) -> MongoDBAgentState:
-    """Format the results for the user."""
-    messages = state.messages.copy()
-    
-    system_message = """You are a MongoDB query assistant. Your job is to:
-1. Format the MongoDB query results in a clear, readable way for the user
-2. Explain what the results mean in the context of their original request
-3. Mention that the results and query have been cached for reproducibility
+    collections = list_collections(mongo_client, configurable.database)
 
-Be concise but comprehensive in your explanation.
-"""
-    
-    # Add the operation and results to context
-    context = f"""
-MongoDB Operation: {state.query.get('operation', 'Unknown')}
-Explanation: {state.query.get('explanation', 'No explanation provided')}
+    system_msg = """You are a MongoDB read-only assistant. 
 
-Results:
-{json.dumps(state.results, indent=2)}
+    Here are the available collections in the database:
+    <collections>
+    {collections}
+    </collections>
 
-Request ID: {state.request_id}
-"""
-    
-    messages.append(HumanMessage(content=f"Please format these MongoDB results for me: {context}"))
-    messages.insert(0, SystemMessage(content=system_message))
-    
-    response = model.invoke(messages)
-    state.messages.append(response)
-    
-    return state
+    Here are your instructions for reasoning about the user's messages:
 
-# Create the graph
-def create_mongodb_agent():
-    """Create and return the MongoDB agent graph."""
-    # Define the graph
-    workflow = StateGraph(MongoDBAgentState)
-    
-    # Add nodes
-    workflow.add_node("analyze_request", analyze_request)
-    workflow.add_node("execute_operation", execute_operation)
-    workflow.add_node("format_response", format_response)
-    
-    # Define edges
-    workflow.add_edge(START, "analyze_request")
-    workflow.add_edge("analyze_request", "execute_operation")
-    workflow.add_edge("execute_operation", "format_response")
-    workflow.add_edge("format_response", END)
-    
-    # Compile the graph
-    mongodb_agent = workflow.compile()
-    
-    return mongodb_agent
+    1. First, analyze the user's message to understand their intent
+    2. Decide for which collection the user wants to query. Call the Collection tool with the collection name
+    3. Do not ask any permission questions. Just call the Collection tool
+    """.format(collections=collections)
 
-# Create the agent
-mongodb_agent = create_mongodb_agent()
 
-# Example usage
-if __name__ == "__main__":
-    # Example usage
-    input_message = HumanMessage(content="Show me the top 5 documents from the users collection in the app database")
-    result = mongodb_agent.invoke({"messages": [input_message]})
-    
-    # Print the final response
-    print(result.messages[-1].content)
+    response = model.bind_tools([Collection]).invoke([SystemMessage(content=system_msg)]+messages)
 
+    return {"messages": [response]}
+
+
+builder = StateGraph(MessagesState, config_schema=Configuration)
+
+builder.add_node(handle_request)
+builder.add_node(run_aggregate)
+
+builder.add_edge(START, "handle_request")
+builder.add_edge("handle_request", "run_aggregate")
+builder.add_edge("run_aggregate", END)
+
+# Compile the graph
+graph = builder.compile()
