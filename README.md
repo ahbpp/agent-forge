@@ -16,6 +16,11 @@ Based on langchain-academy module 5, with the following additional features:
 * Additional ideas collection for ideas and notes
 * Support for Ollama, Gemini, and DeepSeek models
 
+### PyMongo Agent
+
+Agent for interacting with MongoDB using natural language commands.
+See [README](lang_agents/pymongo_agent/README.md) for more details.
+
 **Note:** The `qwen2.5:7b` model deployed with Ollama locally works surprisingly well for these agents.
 
 ## Installation
