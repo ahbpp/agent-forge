@@ -1,95 +1,77 @@
 # MongoDB Agent
 
-A LangGraph/LangChain-powered agent for interacting with MongoDB using natural language commands.
+A LangGraph-powered agent for interacting with MongoDB using natural language commands.
 
-## Features
+## How It Works
 
-- **Natural Language Queries**: Query MongoDB using plain English
-- **Read-Only Operations**: Safely execute read-only MongoDB operations (find, aggregate, count, etc.)
-- **Query Caching**: Automatically saves queries and results for reproducibility
-- **Interactive Mode**: Use the agent in an interactive shell
-- **Multiple MongoDB Operations**: Support for various MongoDB operations:
-  - List databases
-  - List collections in a database
-  - Get collection schema
-  - Find documents (with query filters)
-  - Aggregate pipeline queries
-  - Count documents
-  - Get distinct values for a field
+1. The agent receives a natural language query from the user through the `handle_request` function, which analyzes the query intent and available collections.
+2. If database access is needed, the agent identifies the relevant collection and then routes to `run_aggregate` which generates and executes a MongoDB aggregation pipeline.
+3. For general questions, the agent responds directly without database queries using its knowledge and context.
+4. Results from database queries are formatted into JSON-serializable objects before being presented to the user in a readable format.
 
-## Requirements
+### Agent Graph
 
-- Python 3.9+
-- MongoDB connection (configured via environment variables)
-- OpenAI API Key
+```
+User Query → handle_request → [Decision] → run_aggregate → MongoDB → Results → User
+                    ↓
+                Direct Answer
+                (for simple questions)
+```
+
 
 ## Installation
 
-1. Set up environment variables:
+1. Set up environment variables in `.env` file
    ```
-   PYMONGO_HOST=your_mongodb_host
-   PYMONGO_USER=your_mongodb_user
-   PYMONGO_PASSWORD=your_mongodb_password
-   OPENAI_API_KEY=your_openai_api_key
-   ```
-
-2. Install dependencies:
-   ```
-   uv pip install ".[dev]"
+   PYMONGO_HOST=your_mongodb_host (e.g. mongodb://host.docker.internal:27017/ if running with docker and mongodb://localhost:27017/ if running `lang_agents/pymongo_agent/example.py`)
+   PYMONGO_USER=your_mongodb_user (if needed)
+   PYMONGO_PASSWORD=your_mongodb_password (if needed)
+   OPENAI_API_KEY=your_openai_api_key (if needed)
+   LANGSMITH_TRACING=true
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=your_langchain_api_key (it is not necessary, but it is very helpful for debugging)
+   LANGSMITH_PROJECT=your_langsmith_project (if needed)
+   OLLAMA_HOST="http://host.docker.internal:11434" (if running with docker and use ollama models)
    ```
 
 ## Usage
+
+
+### Create test MongoDB
+1. Run MongoDB docker container
+```bash
+docker run -d -p 27017:27017 --name mongodb mongo:latest
+```
+2. Create a test database and collection and insert some test data
+```bash
+python lang_agents/pymongo_agent/mongo_create_db.py
+```
+3. Run mongosh to check the database (optional)
+```bash
+docker exec -it mongodb mongosh
+```
+**mongosh commands:**  
+3.1 Switch to target database: `use user_management`  
+3.2 List all collections: `show collections`  
+3.3 List all documents in the users collection: `db.users.find().pretty()`  
+See more: https://www.mongodb.com/docs/manual/mongo/
+
+
 
 ### Command Line Interface
 
 ```bash
 # Run a single query
-python -m lang_agents.pymongo_agent.example "Show me the first 5 documents in the users collection"
+python -m lang_agents.pymongo_agent.example "How many users are from New York?"
 
 # Run in interactive mode
 python -m lang_agents.pymongo_agent.example --interactive
 ```
 
-### As a Library
+### Run in docker (`langgraph up`)
 
-```python
-from langchain_core.messages import HumanMessage
-from lang_agents.pymongo_agent.pymongo_agent import mongodb_agent
-
-# Create a human message with your query
-message = HumanMessage(content="List all databases")
-
-# Invoke the agent with your message
-result = mongodb_agent.invoke({"messages": [message]})
-
-# Print the result
-print(result.messages[-1].content)
+```bash
+langgraph up
 ```
 
-## How It Works
-
-The MongoDB agent uses a LangGraph workflow with three main steps:
-
-1. **Analyze Request**: Takes a natural language query and determines what MongoDB operation to run
-2. **Execute Operation**: Runs the determined MongoDB operation with the necessary parameters
-3. **Format Response**: Formats the results in a human-readable way and returns it to the user
-
-All queries and results are cached in the `cache` directory for reproducibility.
-
-## Cache Format
-
-The cache stores each query in a JSON file with:
-- Timestamp of when the query was run
-- Request ID (for tracking)
-- Original query (as interpreted by the agent)
-- Results of the query
-
-## Limitations
-
-- Read-only operations only (no insert, update, delete)
-- Requires proper MongoDB connection details
-- Limited to the operations implemented in the tools
-
-## License
-
-This project is open-source and available under the MIT License. 
+See `langgraph.json` for configuration

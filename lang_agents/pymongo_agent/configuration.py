@@ -18,7 +18,7 @@ class Configuration:
     """The configurable fields for the chatbot."""
     database: str = "user_management"
     model_provider: ModelProvider = ModelProvider.OLLAMA
-    model_name: str = "qwen2.5:7b" # "gpt-4o"
+    model_name: str = "qwen2.5:7b"
     temperature: float = 0.0
 
     @classmethod

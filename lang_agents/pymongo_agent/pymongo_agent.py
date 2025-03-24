@@ -1,19 +1,16 @@
-from logging import Logger
 import json
-import pprint
 
-from pathlib import Path
 
 from pydantic import BaseModel, Field
-
-from typing import TypedDict, List, Dict, Any
+from typing import TypedDict, List, Dict, Any, Literal
+from logging import Logger
+from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage
 
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.store.base import BaseStore
-from langgraph.store.memory import InMemoryStore
 
 from lang_agents.pymongo_agent.utils import (
     get_read_mongo_client, 
@@ -23,8 +20,7 @@ from lang_agents.pymongo_agent.utils import (
     get_model_from_config,
     parse_aggregate_query_tool_call
 )
-from lang_agents.pymongo_agent.configuration import Configuration, ModelProvider
-from dotenv import load_dotenv
+from lang_agents.pymongo_agent.configuration import Configuration
 
 
 load_dotenv()
@@ -47,6 +43,11 @@ class AggregateQuery(BaseModel):
 
 
 def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    """
+    Invoke LLM to generate MongoDB aggregate query
+    Run the query and return the result
+    """
+    
     configurable = Configuration.from_runnable_config(config)
     
     messages = state['messages']
@@ -62,6 +63,7 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     Reflect on the following interaction 
     Create a MongoDB aggregate query for {collection_name} collection 
     You must call the AggregateQuery tool with the aggregate query. 
+    Check that the tool call is valid and all syntax is correct.
     Check that all `[`, `]`, `{{`, `}}` are balanced and in the correct order.
     Do not ask any questions or permissions
 
@@ -76,19 +78,19 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     try:
         query = response.tool_calls[0]["args"]["query"]
     except (IndexError, KeyError) as e:
+        # Sometimes not OpenAI models return the tool call in a wrong format
+        # parse_aggregate_query_tool_call handles this (not the best solution, but it works)
         _, query = parse_aggregate_query_tool_call(response)
-    pprint.pprint(query)
     if isinstance(query, str):
         query = json.loads(query)
     if isinstance(query, dict):
         query = [query]
 
     # Execute the query
-    print(f"Executing query: {query}")
+    logger.info(f"Executing query: {query}")
     cursor = collection.aggregate(query)
     result = [aggregate_mongo_doc_to_json_serializable(doc) 
               for doc in cursor]
-    pprint.pprint(result)
 
     content = {
         "query": query,
@@ -104,23 +106,34 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
 def handle_request(state: MessagesState, 
                    config: RunnableConfig, 
                    store: BaseStore):
+    """
+    Handle the user's request by analyzing the message and executing the appropriate action.
+    Handles collection selection for queries or provides direct responses for simple questions.
+    """
     messages = state['messages']
     configurable = Configuration.from_runnable_config(config)
 
     collections = list_collections(mongo_client, configurable.database)
 
-    system_msg = """You are a MongoDB read-only assistant. 
+    system_msg = """You are a MongoDB read-only assistant that helps users query database collections using natural language.
 
-    Here are the available collections in the database:
+    Available collections in the database:
     <collections>
     {collections}
     </collections>
 
-    Here are your instructions for reasoning about the user's messages:
+    Follow these steps for each user request:
+    
+    1. Analyze the user's query to determine their information need
+    2. For queries requiring database access:
+       - Identify the most relevant collection(s)
+       - Call the Collection tool with the appropriate collection name
+    3. For general MongoDB questions or schema information:
+       - Answer directly without using tools
+    4. Always provide concise, accurate responses
+    5. For empty results, explain possible reasons
 
-    1. First, analyze the user's message to understand their intent
-    2. Decide for which collection the user wants to query. Call the Collection tool with the collection name
-    3. Do not ask any permission questions. Just call the Collection tool
+    Remember: You can only perform read operations (find, aggregate, count). Write operations (insert, update, delete) are not permitted.
     """.format(collections=collections)
 
 
@@ -129,13 +142,27 @@ def handle_request(state: MessagesState,
     return {"messages": [response]}
 
 
+def route_message(state: MessagesState, 
+                  config: RunnableConfig, 
+                  store: BaseStore) -> Literal[END, "run_aggregate"]: # type: ignore
+    """
+    Route the message to the appropriate node based on the collection selection.
+    """
+    message = state['messages'][-1]
+    if len(message.tool_calls) == 0:
+        return END
+    else:
+        return "run_aggregate"
+
+
 builder = StateGraph(MessagesState, config_schema=Configuration)
 
 builder.add_node(handle_request)
 builder.add_node(run_aggregate)
 
+
 builder.add_edge(START, "handle_request")
-builder.add_edge("handle_request", "run_aggregate")
+builder.add_conditional_edges("handle_request", route_message)
 builder.add_edge("run_aggregate", END)
 
 # Compile the graph

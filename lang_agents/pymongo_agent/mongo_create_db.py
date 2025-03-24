@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# mongo_create_db.py - Script to create a MongoDB database with a collection and sample data
+# this script creates a MongoDB database with a collection and sample data
 
 import dateutil.parser
 
@@ -44,6 +43,10 @@ collection_schema = {
                         "zip": {
                             "bsonType": "string",
                             "description": "Zip code must be a string and is required"
+                        },
+                        "country": {
+                            "bsonType": "string",
+                            "description": "Country must be a string if provided"
                         }
                     }
                 },
@@ -68,10 +71,9 @@ collection_schema = {
                             "bsonType": "bool",
                             "description": "Notifications preference must be a boolean if provided"
                         },
-                        "theme": {
+                        "display_name": {
                             "bsonType": "string",
-                            "enum": ["light", "dark", "system"],
-                            "description": "Theme must be one of: light, dark, system if provided"
+                            "description": "Display name must be a string if provided"
                         }
                     }
                 }

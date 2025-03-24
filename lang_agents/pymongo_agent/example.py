@@ -1,16 +1,24 @@
-#!/usr/bin/env python
-"""
-Example script demonstrating how to use the MongoDB Agent.
-This script allows users to interact with MongoDB using natural language.
-"""
+# Example script demonstrating how to use the MongoDB Agent.
+# This script allows users to interact with MongoDB using natural language.
 
-import sys
 import argparse
 import pprint
+import json
 
 from langchain_core.messages import HumanMessage
 
 from lang_agents.pymongo_agent.pymongo_agent import graph as mongodb_agent
+
+
+MAX_NUMBER_OF_MESSAGES = 10
+
+
+def print_response(response):
+    try:
+        json_response = json.loads(response)
+        pprint.pprint(json_response)
+    except json.JSONDecodeError:
+        pprint.pprint(response)
 
 def main():
     parser = argparse.ArgumentParser(description="MongoDB Agent - Query MongoDB using natural language")
@@ -21,30 +29,30 @@ def main():
     
     if args.interactive:
         print("MongoDB Agent Interactive Mode")
-        print("Type 'exit' or 'quit' to exit")
         print("Enter your queries in natural language.")
         print("-" * 50)
-        
+        messages = []
         while True:
             try:
                 user_input = input("\nEnter your query: ")
-                
-                if user_input.lower() in ['exit', 'quit']:
-                    print("Exiting MongoDB Agent. Goodbye!")
-                    break
                 
                 if not user_input.strip():
                     continue
                 
                 message = HumanMessage(content=user_input)
-                result = mongodb_agent.invoke({"messages": [message]})
+                messages.append(message)
+                result = mongodb_agent.invoke({"messages": messages})
                 
                 # Print the AI's response
-                print("\n" + result.messages[-1].content)
-                print("\n" + "-" * 50)
+                print_response(result["messages"][-1].content)
+
+                messages = result["messages"]
+                if len(messages) > MAX_NUMBER_OF_MESSAGES:
+                    # Cut old messages to keep the conversation size manageable
+                    messages = messages[-MAX_NUMBER_OF_MESSAGES:]
                 
             except KeyboardInterrupt:
-                print("\nExiting MongoDB Agent. Goodbye!")
+                print("\nKeyboardInterrupt received. Exiting MongoDB Agent.")
                 break
             except Exception as e:
                 print(f"\nError: {str(e)}")
@@ -52,7 +60,7 @@ def main():
     elif args.query:
         message = HumanMessage(content=args.query)
         result = mongodb_agent.invoke({"messages": [message]})
-        pprint.pprint(result["messages"])
+        print_response(result["messages"][-1].content)
     
     else:
         parser.print_help()

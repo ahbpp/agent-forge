@@ -8,12 +8,13 @@ from bson.objectid import ObjectId
 from bson.typings import _DocumentType
 from pymongo.synchronous.collection import Collection
 
-from lang_agents.pymongo_agent.configuration import Configuration, ModelProvider
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
 from langchain_ollama import ChatOllama
 from langchain.chat_models import init_chat_model
+
+from lang_agents.pymongo_agent.configuration import Configuration, ModelProvider
 
 
 def get_read_mongo_client() -> pymongo.MongoClient:
@@ -82,6 +83,10 @@ def get_model_from_config(configurable: Configuration) -> BaseChatModel:
 def parse_aggregate_query_tool_call(model_output: AIMessage):
     """
     Parses the model output to extract the AggregateQuery tool call.
+    model_output format:
+    <tool_call>
+    {"name": "AggregateQuery", "arguments": [{...}, {...}]}
+    </tool_call>
 
     Args:
         model_output: The raw string output from the language model.
@@ -91,9 +96,7 @@ def parse_aggregate_query_tool_call(model_output: AIMessage):
         or (None, None) if the tool call cannot be parsed.
     """
     model_output = model_output.content
-    print(model_output)
     tool_call_match = re.search(r"<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>", model_output)
-    print(tool_call_match)
     if tool_call_match:
         try:
             tool_call_str = tool_call_match.group(1)
