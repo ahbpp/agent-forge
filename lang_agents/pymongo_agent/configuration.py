@@ -16,10 +16,11 @@ class ModelProvider(Enum):
 @dataclass(kw_only=True)
 class Configuration:
     """The configurable fields for the chatbot."""
-    database: str = "user_management"
-    model_provider: ModelProvider = ModelProvider.OLLAMA
-    model_name: str = "qwen2.5:7b"
+    database: str = "al"
+    model_provider: ModelProvider = ModelProvider.OPENAI
+    model_name: str = "gpt-4o"
     temperature: float = 0.0
+    run_query: bool = True
 
     @classmethod
     def from_runnable_config(
