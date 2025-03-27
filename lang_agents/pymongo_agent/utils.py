@@ -3,6 +3,7 @@ import pymongo
 import datetime
 import re
 import json
+from collections import defaultdict
 
 from bson.objectid import ObjectId
 from bson.typings import _DocumentType
@@ -17,6 +18,10 @@ from langchain.chat_models import init_chat_model
 from lang_agents.pymongo_agent.configuration import Configuration, ModelProvider
 
 
+CACHE_DIR = ".cache/pymongo_agent_cache"
+SCHEMA_CACHE_DIR = os.path.join(CACHE_DIR, "schemas")
+
+
 def get_read_mongo_client() -> pymongo.MongoClient:
     return pymongo.MongoClient(
         host=os.getenv("PYMONGO_HOST"),
@@ -27,10 +32,74 @@ def get_read_mongo_client() -> pymongo.MongoClient:
     )
 
 
-def get_schema(collection: Collection) -> _DocumentType:
-    schema = collection.find_one()
-    assert schema is not None, "Collection is empty"
+def get_schema_recursive(doc: dict) -> dict:
+    for key, value in doc.items():
+        if isinstance(value, dict):
+            doc[key] = get_schema_recursive(value)
+    return doc
+
+
+def get_schema(collection: Collection, sample_size: int = 50) -> _DocumentType:
+    """
+    Generate a schema dictionary from a list of MongoDB sample documents.
+    The schema maps each field (using dot notation for nested fields) to a set of type names.
+    
+    Args:
+        collection (Collection): The MongoDB collection to analyze.
+        sample_size (int): The number of documents to sample from the collection.
+    
+    Returns:
+        dict: A dictionary with field paths as keys and sets of type names as values.
+    """
+    schema_name = f"{collection.name}_schema.json"
+    schema_path = os.path.join(SCHEMA_CACHE_DIR, schema_name)
+    if os.path.exists(schema_path):
+        print(f"Loading schema from cache: {schema_path}")
+        with open(schema_path, "r") as f:
+            return json.load(f)
+    samples = collection.aggregate([{"$sample": {"size": sample_size}}])
+    schema = defaultdict(set)
+    
+    def analyze_doc(doc, path=""):
+        for key, value in doc.items():
+            # Create the full path for the field (e.g., "mole.mole_id")
+            key_path = f"{path}.{key}" if path else key
+            # Record the type name of the current value
+            schema[key_path].add(type(value).__name__)
+            
+            # If the value is a dictionary, recurse to get its fields.
+            if isinstance(value, dict):
+                analyze_doc(value, key_path)
+            # If it's a list, check each item in the list.
+            elif isinstance(value, list):
+                for item in value:
+                    # For dictionaries inside the list, recurse into them.
+                    if isinstance(item, dict):
+                        analyze_doc(item, key_path)
+                    else:
+                        schema[key_path].add(type(item).__name__)
+    
+    # Process each document in the sample set.
+    for doc in samples:
+        analyze_doc(doc)
+
+    # make set json serializable
+    schema = {k: list(v) for k, v in schema.items()}
+    # sort keys alphabetically
+    schema = dict(sorted(schema.items()))
+
+    if not os.path.exists(SCHEMA_CACHE_DIR):
+        os.makedirs(SCHEMA_CACHE_DIR)
+    try:
+        with open(schema_path, "w") as f:
+            json.dump(schema, f, indent=4)
+    except Exception as e:
+        print(f"Error saving schema to cache: {str(e)}")
+        if os.path.exists(schema_path):
+            os.remove(schema_path)
+        raise e
     return schema
+
 
 
 def list_collections(mongo_client: pymongo.MongoClient, database: str) -> list[str]:

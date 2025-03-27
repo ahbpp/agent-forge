@@ -62,7 +62,7 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     system_message = """
     Reflect on the following interaction 
     Create a MongoDB aggregate query for {collection_name} collection 
-    You must call the AggregateQuery tool with the aggregate query. 
+    You must call the AggregateQuery tool with the `query` argument.
     Check that the tool call is valid and all syntax is correct.
     Check that all `[`, `]`, `{{`, `}}` are balanced and in the correct order.
     Do not ask any questions or permissions
@@ -87,10 +87,14 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
         query = [query]
 
     # Execute the query
-    logger.info(f"Executing query: {query}")
-    cursor = collection.aggregate(query)
-    result = [aggregate_mongo_doc_to_json_serializable(doc) 
-              for doc in cursor]
+    if configurable.run_query:
+        logger.info(f"Executing query: {query}")
+        cursor = collection.aggregate(query)
+        result = [aggregate_mongo_doc_to_json_serializable(doc) 
+                for doc in cursor]
+    else:
+        logger.info(f"Query not executed, because run_query is False in the configuration")
+        result = []
 
     content = {
         "query": query,
