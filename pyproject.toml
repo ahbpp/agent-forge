@@ -21,7 +21,6 @@ dependencies = [
     "markdownify==0.14.1",
     "langchain-core>=0.3.35",
     "langchain-openai>=0.3.1",
-    "langchain-anthropic==0.3.3",
     "langchain-ollama>=0.2.2",
     "pandas>=2.2.0",
     "trustcall>=0.0.38",
@@ -29,14 +28,14 @@ dependencies = [
     "langchain>=0.3.18",
     "langchain-aws>=0.2.11",
     "langchain-fireworks>=0.2.6",
-    "langchain-google-genai==2.0.8",
     "langchain-community>=0.3.18",
     "langsmith",
     "langgraph>=0.3.2",
     "langchain-deepseek",
     "tavily-python",
     "wikipedia",
-    "pymongo>=4.5.0"
+    "pymongo>=4.5.0",
+    "chainlit>=1.0.0"
 ]
 
 [project.optional-dependencies]

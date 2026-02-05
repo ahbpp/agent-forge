@@ -190,3 +190,5 @@ gcp-login.json
 uv.lock
 
 *.langgraph_api
+
+.chainlit
