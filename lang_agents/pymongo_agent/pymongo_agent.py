@@ -94,7 +94,7 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     
     Please fix the query and try again. Attempt {attempt + 1} of {max_retries}.
     """
-                print(f"\n🔄 Retry attempt {attempt + 1}/{max_retries} due to error: {last_error}\n")
+                logger.warning(f"Retry attempt {attempt + 1}/{max_retries} due to error: {last_error}")
                 
                 # Dispatch custom event for UI visibility
                 dispatch_custom_event(
@@ -125,18 +125,58 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
             if isinstance(query, dict):
                 query = [query]
 
+            # Dispatch event showing the generated query before execution
+            dispatch_custom_event(
+                "query_generated",
+                {
+                    "type": "query_generated",
+                    "query": query,
+                    "collection": collection_name,
+                    "attempt": attempt + 1
+                },
+                config=config
+            )
+            logger.info(f"Generated query for {collection_name}: {json.dumps(query, indent=2)}")
+
             # Execute the query
             if configurable.run_query:
-                logger.info(f"Executing query: {query}")
-                print(f"\n🔍 Executing query: {json.dumps(query, indent=2)}\n")
+                logger.info(f"Executing query on {collection_name}")
+                
+                dispatch_custom_event(
+                    "query_executing",
+                    {
+                        "type": "query_executing",
+                        "collection": collection_name
+                    },
+                    config=config
+                )
+                
                 cursor = collection.aggregate(query)
                 result = [aggregate_mongo_doc_to_json_serializable(doc) 
                         for doc in cursor]
-                # Success - break out of retry loop
-                print(f"\n✅ Query executed successfully. Retrieved {len(result)} documents.\n")
+                
+                # Dispatch success event
+                dispatch_custom_event(
+                    "query_success",
+                    {
+                        "type": "query_success",
+                        "collection": collection_name,
+                        "count": len(result)
+                    },
+                    config=config
+                )
+                logger.info(f"Query executed successfully. Retrieved {len(result)} documents.")
                 last_error = None
                 break
             else:
+                dispatch_custom_event(
+                    "query_skipped",
+                    {
+                        "type": "query_skipped",
+                        "reason": "run_query is False in configuration"
+                    },
+                    config=config
+                )
                 logger.info(f"Query not executed, because run_query is False in the configuration")
                 result = []
                 break
@@ -158,7 +198,17 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     if last_error:
         content["error"] = last_error
         content["retries_exhausted"] = True
-        print(f"\n❌ Query failed after {max_retries} attempts. Last error: {last_error}\n")
+        dispatch_custom_event(
+            "query_failed",
+            {
+                "type": "query_failed",
+                "error": last_error,
+                "attempts": max_retries,
+                "collection": collection_name
+            },
+            config=config
+        )
+        logger.error(f"Query failed after {max_retries} attempts. Last error: {last_error}")
     
     content = json.dumps(content, indent=2)
 
@@ -213,12 +263,20 @@ def handle_request(state: MessagesState,
 
     response = model.bind_tools([Collection]).invoke([SystemMessage(content=system_msg)]+messages)
     
-    # Print selected collection if tool was called
+    # Dispatch event for selected collection
     if response.tool_calls:
         for tool_call in response.tool_calls:
             if tool_call.get('name') == 'Collection' or 'collection' in tool_call.get('args', {}):
                 selected_collection = tool_call['args'].get('collection')
-                print(f"\n📁 Selected collection: {selected_collection}\n")
+                dispatch_custom_event(
+                    "collection_selected",
+                    {
+                        "type": "collection_selected",
+                        "collection": selected_collection
+                    },
+                    config=config
+                )
+                logger.info(f"Selected collection: {selected_collection}")
 
     return {"messages": [response]}
 

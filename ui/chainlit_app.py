@@ -114,12 +114,64 @@ async def on_message(message: cl.Message):
                                 aggregate_step.output = content
                         await aggregate_step.__aexit__(None, None, None)
                 
-                # Handle custom events (for retry visibility)
+                # Handle custom events (for detailed step visibility)
                 elif event_type == "on_custom_event":
-                    event_name = event.get("name", "")
+                    custom_event_name = event.get("name", "")
                     event_data = event.get("data", {})
                     
-                    if event_name == "retry_attempt" or event_data.get("type") == "retry":
+                    # Collection selected
+                    if custom_event_name == "collection_selected":
+                        collection = event_data.get("collection", "unknown")
+                        if collection_step:
+                            collection_step.output = f"Selected: **{collection}**"
+                    
+                    # Query generated - show the query before execution
+                    elif custom_event_name == "query_generated":
+                        query = event_data.get("query", [])
+                        collection = event_data.get("collection", "")
+                        attempt = event_data.get("attempt", 1)
+                        
+                        step_name = "📝 Generated Query" if attempt == 1 else f"📝 Generated Query (Attempt {attempt})"
+                        async with cl.Step(
+                            name=step_name,
+                            type="tool",
+                            parent_id=aggregate_step.id if aggregate_step else main_step.id
+                        ) as query_step:
+                            query_step.output = f"**Collection:** `{collection}`\n\n**Pipeline:**\n```json\n{json.dumps(query, indent=2)}\n```"
+                    
+                    # Query executing
+                    elif custom_event_name == "query_executing":
+                        collection = event_data.get("collection", "")
+                        async with cl.Step(
+                            name="⚡ Executing Query",
+                            type="tool",
+                            parent_id=aggregate_step.id if aggregate_step else main_step.id
+                        ) as exec_step:
+                            exec_step.output = f"Running aggregation on `{collection}`..."
+                    
+                    # Query success
+                    elif custom_event_name == "query_success":
+                        count = event_data.get("count", 0)
+                        async with cl.Step(
+                            name="✅ Query Completed",
+                            type="tool",
+                            parent_id=aggregate_step.id if aggregate_step else main_step.id
+                        ) as success_step:
+                            success_step.output = f"Retrieved **{count}** documents"
+                    
+                    # Query failed after all retries
+                    elif custom_event_name == "query_failed":
+                        error = event_data.get("error", "Unknown error")
+                        attempts = event_data.get("attempts", 0)
+                        async with cl.Step(
+                            name="❌ Query Failed",
+                            type="tool",
+                            parent_id=aggregate_step.id if aggregate_step else main_step.id
+                        ) as fail_step:
+                            fail_step.output = f"**Failed after {attempts} attempts**\n\n**Error:** {error}"
+                    
+                    # Retry attempt
+                    elif custom_event_name == "retry_attempt" or event_data.get("type") == "retry":
                         attempt = event_data.get("attempt", 0)
                         max_retries = event_data.get("max_retries", 3)
                         error = event_data.get("error", "Unknown error")
@@ -128,7 +180,7 @@ async def on_message(message: cl.Message):
                             type="tool",
                             parent_id=aggregate_step.id if aggregate_step else main_step.id
                         ) as retry_step:
-                            retry_step.output = f"**Error:** {error}\n\nRetrying..."
+                            retry_step.output = f"**Previous error:** {error}\n\nGenerating new query..."
         
         except Exception as e:
             main_step.output = f"❌ Error: {str(e)}"
@@ -170,7 +222,8 @@ async def on_message(message: cl.Message):
                         if len(results) > 10:
                             formatted_response += f"\n\n*...and {len(results) - 10} more documents*"
                     else:
-                        formatted_response += "*No documents found*"
+                        formatted_response += "📭 **No matching documents found in the database.**\n\n"
+                        formatted_response += "Try adjusting your search parameters"
                 
                 response_content = formatted_response
         except (json.JSONDecodeError, TypeError):
