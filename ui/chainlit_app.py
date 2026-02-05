@@ -116,12 +116,15 @@ async def on_message(message: cl.Message):
                 
                 # Handle custom events (for retry visibility)
                 elif event_type == "on_custom_event":
+                    event_name = event.get("name", "")
                     event_data = event.get("data", {})
-                    if event_data.get("type") == "retry":
+                    
+                    if event_name == "retry_attempt" or event_data.get("type") == "retry":
                         attempt = event_data.get("attempt", 0)
+                        max_retries = event_data.get("max_retries", 3)
                         error = event_data.get("error", "Unknown error")
                         async with cl.Step(
-                            name=f"🔄 Retry Attempt {attempt}",
+                            name=f"🔄 Retry Attempt {attempt}/{max_retries}",
                             type="tool",
                             parent_id=aggregate_step.id if aggregate_step else main_step.id
                         ) as retry_step:

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import SystemMessage
+from langchain_core.callbacks import dispatch_custom_event
 
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.store.base import BaseStore
@@ -94,6 +95,19 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     Please fix the query and try again. Attempt {attempt + 1} of {max_retries}.
     """
                 print(f"\n🔄 Retry attempt {attempt + 1}/{max_retries} due to error: {last_error}\n")
+                
+                # Dispatch custom event for UI visibility
+                dispatch_custom_event(
+                    "retry_attempt",
+                    {
+                        "type": "retry",
+                        "attempt": attempt + 1,
+                        "max_retries": max_retries,
+                        "error": last_error,
+                        "collection": collection_name
+                    },
+                    config=config
+                )
             else:
                 system_message = base_system_message
             
