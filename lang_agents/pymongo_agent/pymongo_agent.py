@@ -118,19 +118,29 @@ def handle_request(state: MessagesState,
     configurable = Configuration.from_runnable_config(config)
 
     collections = list_collections(mongo_client, configurable.database)
+    
+    # Build collection info with full schema for better collection selection
+    collection_info = []
+    for coll_name in collections:
+        coll = mongo_client[configurable.database][coll_name]
+        schema = get_schema(coll)
+        schema_str = json.dumps(schema, indent=2, default=str)
+        collection_info.append(f"Collection: {coll_name}\nSchema:\n{schema_str}")
+    
+    collections_desc = "\n\n".join(collection_info)
 
     system_msg = """You are a MongoDB read-only assistant that helps users query database collections using natural language.
 
-    Available collections in the database:
+    Available collections in the database with their full schemas:
     <collections>
-    {collections}
+    {collections_desc}
     </collections>
 
     Follow these steps for each user request:
     
     1. Analyze the user's query to determine their information need
     2. For queries requiring database access:
-       - Identify the most relevant collection(s)
+       - Identify the most relevant collection(s) based on the schema described above
        - Call the Collection tool with the appropriate collection name
     3. For general MongoDB questions or schema information:
        - Answer directly without using tools
@@ -138,10 +148,17 @@ def handle_request(state: MessagesState,
     5. For empty results, explain possible reasons
 
     Remember: You can only perform read operations (find, aggregate, count). Write operations (insert, update, delete) are not permitted.
-    """.format(collections=collections)
+    """.format(collections_desc=collections_desc)
 
 
     response = model.bind_tools([Collection]).invoke([SystemMessage(content=system_msg)]+messages)
+    
+    # Print selected collection if tool was called
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            if tool_call.get('name') == 'Collection' or 'collection' in tool_call.get('args', {}):
+                selected_collection = tool_call['args'].get('collection')
+                print(f"\n📁 Selected collection: {selected_collection}\n")
 
     return {"messages": [response]}
 
