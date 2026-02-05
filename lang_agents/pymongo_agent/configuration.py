@@ -18,10 +18,12 @@ class Configuration:
     """The configurable fields for the chatbot."""
     database: str = "al"
     model_provider: ModelProvider = ModelProvider.OPENAI
-    model_name: str = "gpt-4o"
+    model_name: str = "gpt-5.1"# "gpt-4o"
     temperature: float = 0.0
     run_query: bool = True
     max_retry_attempts: int = 3
+    max_validation_attempts: int = 3
+    max_lookups: int = 4  # Maximum number of $lookup stages allowed
 
     @classmethod
     def from_runnable_config(
