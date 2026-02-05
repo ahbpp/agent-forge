@@ -19,11 +19,7 @@ async def on_chat_start():
     # Display welcome message
     await cl.Message(
         content="👋 **Welcome to MongoDB Query Assistant!**\n\n"
-                "I can help you query your MongoDB database using natural language.\n\n"
-                "Try asking something like:\n"
-                "- *Show me all users*\n"
-                "- *What are the top 5 orders by amount?*\n"
-                "- *Count documents in each collection*"
+                "I can help you query your MongoDB database using natural language.\n"
     ).send()
 
 
@@ -244,8 +240,28 @@ async def on_message(message: cl.Message):
                     # Execution events
                     elif custom_event_name == "execution_started":
                         collection = event_data.get("collection", "")
+                        pipeline_stages = event_data.get("pipeline_stages", 0)
                         if executor_step:
-                            executor_step.output = f"Running on `{collection}`..."
+                            executor_step.output = f"Preparing to execute {pipeline_stages} stages on `{collection}`..."
+                    
+                    elif custom_event_name == "executing_pipeline":
+                        collection = event_data.get("collection", "")
+                        pipeline = event_data.get("pipeline", [])
+                        stages_count = event_data.get("stages_count", 0)
+                        
+                        # Build a summary of stages
+                        stage_summary = []
+                        for i, stage in enumerate(pipeline):
+                            if isinstance(stage, dict):
+                                stage_type = list(stage.keys())[0]
+                                stage_summary.append(f"**{i+1}.** `{stage_type}`")
+                        
+                        async with cl.Step(
+                            name=f"📋 Running {stages_count} stages on {collection}",
+                            type="tool",
+                            parent_id=executor_step.id if executor_step else main_step.id
+                        ) as pipeline_step:
+                            pipeline_step.output = f"**Stages:** {' → '.join(stage_summary)}\n\n**Full Pipeline:**\n```json\n{json.dumps(pipeline, indent=2)}\n```"
                     
                     elif custom_event_name == "execution_success":
                         count = event_data.get("count", 0)

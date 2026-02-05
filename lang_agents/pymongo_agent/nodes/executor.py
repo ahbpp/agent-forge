@@ -60,6 +60,7 @@ def executor_node(state: MultiCollectionState, config: RunnableConfig) -> dict:
     
     last_error = None
     result = []
+    total_stages = len(pipeline)
     
     for attempt in range(max_retries):
         try:
@@ -88,6 +89,18 @@ def executor_node(state: MultiCollectionState, config: RunnableConfig) -> dict:
             
             if configurable.run_query:
                 logger.info(f"Executing pipeline on {primary_collection}")
+                
+                # Show the full pipeline being executed
+                dispatch_custom_event(
+                    "executing_pipeline",
+                    {
+                        "type": "executing_pipeline",
+                        "collection": primary_collection,
+                        "pipeline": pipeline,
+                        "stages_count": total_stages
+                    },
+                    config=config
+                )
                 
                 cursor = collection.aggregate(pipeline)
                 result = [aggregate_mongo_doc_to_json_serializable(doc) for doc in cursor]
