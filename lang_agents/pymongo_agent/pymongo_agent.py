@@ -45,10 +45,11 @@ class AggregateQuery(BaseModel):
 def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore):
     """
     Invoke LLM to generate MongoDB aggregate query
-    Run the query and return the result
+    Run the query and return the result with retry logic for error handling
     """
     
     configurable = Configuration.from_runnable_config(config)
+    max_retries = configurable.max_retry_attempts
     
     messages = state['messages']
     last_message = messages[-1]
@@ -59,7 +60,7 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
 
     collection_schema = get_schema(collection)
 
-    system_message = """
+    base_system_message = """
     Reflect on the following interaction 
     Create a MongoDB aggregate query for {collection_name} collection 
     You must call the AggregateQuery tool with the `query` argument.
@@ -74,32 +75,77 @@ def run_aggregate(state: MessagesState, config: RunnableConfig, store: BaseStore
     """.format(collection_name=collection_name, collection_schema=collection_schema)
     
     llm_with_tools = model.bind_tools(tools=[AggregateQuery], tool_choice=True)
-    response = llm_with_tools.invoke([SystemMessage(content=system_message)]+messages[:-1])
-    try:
-        query = response.tool_calls[0]["args"]["query"]
-    except (IndexError, KeyError) as e:
-        # Sometimes not OpenAI models return the tool call in a wrong format
-        # parse_aggregate_query_tool_call handles this (not the best solution, but it works)
-        _, query = parse_aggregate_query_tool_call(response)
-    if isinstance(query, str):
-        query = json.loads(query)
-    if isinstance(query, dict):
-        query = [query]
+    
+    last_error = None
+    query = None
+    result = []
+    
+    for attempt in range(max_retries):
+        try:
+            # Add error context to system message if this is a retry
+            if last_error:
+                system_message = base_system_message + f"""
+                
+    IMPORTANT: The previous query attempt failed with the following error:
+    <error>
+    {last_error}
+    </error>
+    
+    Please fix the query and try again. Attempt {attempt + 1} of {max_retries}.
+    """
+                print(f"\n🔄 Retry attempt {attempt + 1}/{max_retries} due to error: {last_error}\n")
+            else:
+                system_message = base_system_message
+            
+            response = llm_with_tools.invoke([SystemMessage(content=system_message)]+messages[:-1])
+            
+            try:
+                query = response.tool_calls[0]["args"]["query"]
+            except (IndexError, KeyError) as e:
+                # Sometimes not OpenAI models return the tool call in a wrong format
+                # parse_aggregate_query_tool_call handles this (not the best solution, but it works)
+                _, query = parse_aggregate_query_tool_call(response)
+            
+            if isinstance(query, str):
+                query = json.loads(query)
+            if isinstance(query, dict):
+                query = [query]
 
-    # Execute the query
-    if configurable.run_query:
-        logger.info(f"Executing query: {query}")
-        cursor = collection.aggregate(query)
-        result = [aggregate_mongo_doc_to_json_serializable(doc) 
-                for doc in cursor]
-    else:
-        logger.info(f"Query not executed, because run_query is False in the configuration")
-        result = []
-
+            # Execute the query
+            if configurable.run_query:
+                logger.info(f"Executing query: {query}")
+                print(f"\n🔍 Executing query: {json.dumps(query, indent=2)}\n")
+                cursor = collection.aggregate(query)
+                result = [aggregate_mongo_doc_to_json_serializable(doc) 
+                        for doc in cursor]
+                # Success - break out of retry loop
+                print(f"\n✅ Query executed successfully. Retrieved {len(result)} documents.\n")
+                last_error = None
+                break
+            else:
+                logger.info(f"Query not executed, because run_query is False in the configuration")
+                result = []
+                break
+                
+        except json.JSONDecodeError as e:
+            last_error = f"JSON parsing error: {str(e)}"
+            logger.error(f"Attempt {attempt + 1} failed: {last_error}")
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Attempt {attempt + 1} failed: {last_error}")
+    
+    # Build response content
     content = {
         "query": query,
-        "result": result
+        "result": result,
+        "count": len(result)
     }
+    
+    if last_error:
+        content["error"] = last_error
+        content["retries_exhausted"] = True
+        print(f"\n❌ Query failed after {max_retries} attempts. Last error: {last_error}\n")
+    
     content = json.dumps(content, indent=2)
 
     return {"messages": [{"role": "tool", 

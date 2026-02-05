@@ -21,6 +21,7 @@ class Configuration:
     model_name: str = "gpt-4o"
     temperature: float = 0.0
     run_query: bool = True
+    max_retry_attempts: int = 3
 
     @classmethod
     def from_runnable_config(
