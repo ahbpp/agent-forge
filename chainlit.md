@@ -6,21 +6,59 @@ Welcome to the **MongoDB Query Assistant** powered by LangGraph!
 
 I help you query your MongoDB database using **natural language**. No need to write complex aggregation pipelines - just describe what you want in plain English.
 
+## Query Types
+
+The agent has two branches:
+- **Simple:** Single-collection queries (fast path)
+- **Complex:** Multi-collection queries with `$lookup` joins
+
 ## Example queries
 
-- "Show me all users created this month"
-- "What are the top 10 products by sales?"
+**Simple queries:**
+- "Show me all patients in moleimages collection"
 - "Count how many orders are pending"
-- "Find customers from New York with more than 5 orders"
+- "Find images with more than 3 diagnoses"
+
+**Complex queries:**
+- "Look in both moleimages and diagnosis collections, find all images for patient 123"
+- "Get orders with customer details from customers collection"
 
 ## How it works
 
-1. **You ask** a question in natural language
-2. **I select** the appropriate collection
-3. **I build** a MongoDB aggregation pipeline
-4. **I execute** the query and return results
+1. **Planning** - Analyze your request and decide simple vs complex path
+2. **Query Building** - Generate MongoDB aggregation pipeline
+3. **Validation** - Check pipeline for errors before execution
+4. **Execution** - Run query and return results
 
-You'll see each step in real-time, including any retries if the query needs adjustment.
+You'll see each step in real-time, including the pipeline stages and any retries if needed.
+
+### Agent Graph
+
+```
+                                    ┌─────────────────────────────────────────────────┐
+                                    │              COMPLEX PATH                        │
+                                    │                                                  │
+                                    │  ┌──────────────┐    ┌───────────┐              │
+                              ┌────►│  │ query_builder│───►│ validator │              │
+                              │     │  └──────────────┘    └─────┬─────┘              │
+                              │     │         ▲                  │                    │
+                              │     │         │            ┌─────┴─────┐              │
+                              │     │         │            ▼           ▼              │
+                              │     │    (retry if    ┌────────┐  ┌─────────────────┐ │
+                              │     │     invalid)    │executor│  │validation_failure│ │
+                              │     │                 └────┬───┘  └────────┬────────┘ │
+                              │     └──────────────────────│───────────────│──────────┘
+                              │                            ▼               ▼
+START ──► planner ───────────┼─────────────────────────► END ◄────────────┘
+                              │
+                              │     ┌─────────────────────────────────────────────────┐
+                              │     │              SIMPLE PATH                         │
+                              │     │                                                  │
+                              └────►│  ┌──────────────┐    ┌───────────────┐          │
+                                    │  │simple_handler│───►│simple_executor│──► END   │
+                                    │  └──────────────┘    └───────────────┘          │
+                                    └─────────────────────────────────────────────────┘
+```
 
 ---
 

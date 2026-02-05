@@ -2,21 +2,62 @@
 
 A LangGraph-powered agent for interacting with MongoDB using natural language commands.
 
+## Features
+
+- **Two query branches:** Simple (single-collection) and Complex (multi-collection with `$lookup` joins)
+- **Query validation:** Validates pipelines before execution
+- **Automatic retry:** Retries on failures with error context
+- **Chainlit UI:** Real-time step visualization
+
 ## How It Works
 
-1. The agent receives a natural language query from the user through the `handle_request` function, which analyzes the query intent and available collections.
-2. If database access is needed, the agent identifies the relevant collection and then routes to `run_aggregate` which generates and executes a MongoDB aggregation pipeline.
-3. For general questions, the agent responds directly without database queries using its knowledge and context.
-4. Results from database queries are formatted into JSON-serializable objects before being presented to the user in a readable format.
+The agent has two execution paths:
+
+### Simple Path (Fast)
+For single-collection queries. The agent selects a collection and generates an aggregation pipeline.
+
+### Complex Path
+For multi-collection queries requiring `$lookup` joins. Includes validation before execution.
 
 ### Agent Graph
 
 ```
-User Query → handle_request → [Decision] → run_aggregate → MongoDB → Results → User
-                    ↓
-                Direct Answer
-                (for simple questions)
+                                    ┌─────────────────────────────────────────────────┐
+                                    │              COMPLEX PATH                        │
+                                    │                                                  │
+                                    │  ┌──────────────┐    ┌───────────┐              │
+                              ┌────►│  │ query_builder│───►│ validator │              │
+                              │     │  └──────────────┘    └─────┬─────┘              │
+                              │     │         ▲                  │                    │
+                              │     │         │            ┌─────┴─────┐              │
+                              │     │         │            ▼           ▼              │
+                              │     │    (retry if    ┌────────┐  ┌─────────────────┐ │
+                              │     │     invalid)    │executor│  │validation_failure│ │
+                              │     │                 └────┬───┘  └────────┬────────┘ │
+                              │     └──────────────────────│───────────────│──────────┘
+                              │                            ▼               ▼
+START ──► planner ───────────┼─────────────────────────► END ◄────────────┘
+                              │
+                              │     ┌─────────────────────────────────────────────────┐
+                              │     │              SIMPLE PATH                         │
+                              │     │                                                  │
+                              └────►│  ┌──────────────┐    ┌───────────────┐          │
+                                    │  │simple_handler│───►│simple_executor│──► END   │
+                                    │  └──────────────┘    └───────────────┘          │
+                                    └─────────────────────────────────────────────────┘
 ```
+
+### Nodes
+
+| Node | Description |
+|------|-------------|
+| `planner` | Analyzes query, decides simple/complex/direct_answer path |
+| `query_builder` | Generates MongoDB aggregation pipeline with `$lookup` stages |
+| `validator` | Validates pipeline (collections exist, field names, etc.) |
+| `executor` | Executes validated pipeline |
+| `validation_failure` | Handles failures after max validation retries |
+| `simple_handler` | Selects collection for simple queries |
+| `simple_executor` | Generates and executes single-collection pipeline |
 
 
 ## Installation

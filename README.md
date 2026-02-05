@@ -19,6 +19,13 @@ Based on langchain-academy module 5, with the following additional features:
 ### PyMongo Agent
 
 Agent for interacting with MongoDB using natural language commands.
+
+**Features:**
+- Two query branches: simple (single-collection) and complex (multi-collection with `$lookup` joins)
+- Query validation before execution
+- Automatic retry on failures
+- Chainlit UI with real-time step visualization
+
 See [README](lang_agents/pymongo_agent/README.md) for more details.
 
 **Note:** The `qwen2.5:7b` model deployed with Ollama locally works surprisingly well for these agents.
